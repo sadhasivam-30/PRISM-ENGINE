@@ -1,8 +1,9 @@
 """PRISM Engine local server: stdlib + numpy only.  Run: python server/app.py  ->  http://localhost:8000"""
-import json, os, re, sqlite3, secrets, hashlib, hmac, time, datetime as dt, threading, mimetypes
+import json, os, re, sqlite3, secrets, hashlib, hmac, time, datetime as dt, threading, mimetypes, math
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib import request as ur
+from urllib.parse import urlencode
 from sarash_np import SarashEngine
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -11,6 +12,11 @@ for ln in (ROOT / ".env").read_text().splitlines() if (ROOT / ".env").exists() e
         k, v = ln.split("=", 1); os.environ.setdefault(k.strip(), v.strip())
 HTTPS = os.getenv("PRISM_HTTPS", "false") == "true"
 DEMO_LLM = os.getenv("PRISM_DEMO_MODE", "false") == "true"
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "").strip()
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "").strip()
+ADZUNA_COUNTRY = os.getenv("ADZUNA_COUNTRY", "in").strip().lower()
+try: ADZUNA_CACHE_TTL = max(60, int(os.getenv("ADZUNA_CACHE_TTL", "900")))
+except ValueError: ADZUNA_CACHE_TTL = 900
 ENG = SarashEngine()
 SNAP = json.loads((ROOT / "data" / "market_snapshots.json").read_text())
 CONFIG = {"celebration_threshold": 85,
@@ -32,12 +38,59 @@ DB = sqlite3.connect(ROOT / "data" / "prism.db", check_same_thread=False); DB.ro
 DB.execute("CREATE TABLE IF NOT EXISTS applicants(id TEXT PRIMARY KEY, name TEXT, dob_salt TEXT, dob_hash TEXT, pin_salt TEXT, pin_hash TEXT, data TEXT, created TEXT)")
 DB.execute("CREATE TABLE IF NOT EXISTS audit(ts TEXT, event TEXT, ref TEXT)"); DB.commit()
 LOCK = threading.Lock(); SESS = {}; HITS = {}
+ADZUNA_CACHE = {}; ADZUNA_LOCK = threading.Lock()
 
 def audit(ev, ref=""):
     with LOCK: DB.execute("INSERT INTO audit VALUES(?,?,?)", (dt.datetime.utcnow().isoformat(), ev, ref)); DB.commit()
 def kdf(secret, salt): return hashlib.scrypt(secret.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
 def limited(key, n, win):
     now = time.time(); q = [t for t in HITS.get(key, []) if now - t < win]; q.append(now); HITS[key] = q; return len(q) > n
+
+def adzuna_jobs(career, loc):
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY: return None
+    country = ADZUNA_COUNTRY if re.fullmatch(r"[a-z]{2}", ADZUNA_COUNTRY) else "in"
+    cache_key = (career, loc.lower(), country)
+    now = time.time()
+    with ADZUNA_LOCK:
+        cached = ADZUNA_CACHE.get(cache_key)
+        if cached and now - cached[0] < ADZUNA_CACHE_TTL: return cached[1]
+    queries = {"AI/ML Engineer": "machine learning engineer", "Cybersecurity Analyst": "cyber security analyst",
+               "Cloud/DevOps Engineer": "cloud devops engineer", "Defense Entry": "defence officer",
+               "UX/Product Designer": "UX designer"}
+    params = urlencode({"app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY, "results_per_page": 10,
+                        "what": queries.get(career, career), "where": loc, "content-type": "application/json"})
+    result = None
+    try:
+        req = ur.Request(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
+                         headers={"Accept": "application/json", "User-Agent": "PRISM-Engine/1.0"})
+        with ur.urlopen(req, timeout=5) as response: payload = json.load(response)
+        listings = payload.get("results", []) if isinstance(payload.get("results", []), list) else []
+        count = max(0, int(payload.get("count", len(listings)) or 0))
+        salaries = []; jobs = []
+        for item in listings[:10]:
+            low, high = item.get("salary_min"), item.get("salary_max")
+            if isinstance(low, (int, float)) and isinstance(high, (int, float)) and low > 0 and high >= low:
+                salaries.append((low + high) / 2)
+            elif isinstance(low, (int, float)) and low > 0: salaries.append(float(low))
+            elif isinstance(high, (int, float)) and high > 0: salaries.append(float(high))
+            link = str(item.get("redirect_url", ""))
+            jobs.append({"title": str(item.get("title", "Career opportunity"))[:140],
+                         "company": str((item.get("company") or {}).get("display_name", ""))[:100],
+                         "location": str((item.get("location") or {}).get("display_name", ""))[:100],
+                         "created": str(item.get("created", ""))[:40],
+                         "salary_min": low if isinstance(low, (int, float)) else None,
+                         "salary_max": high if isinstance(high, (int, float)) else None,
+                         "url": link if link.startswith("https://") else ""})
+        mean_salary = payload.get("mean")
+        if not isinstance(mean_salary, (int, float)) or mean_salary <= 0:
+            mean_salary = sum(salaries) / len(salaries) if salaries else None
+        if mean_salary is not None and not math.isfinite(mean_salary): mean_salary = None
+        result = {"count": max(count, len(listings)), "mean_salary": float(mean_salary) if mean_salary else None,
+                  "jobs": jobs, "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    except Exception:
+        result = None
+    with ADZUNA_LOCK: ADZUNA_CACHE[cache_key] = (time.time(), result)
+    return result
 
 def market_for(career, loc):
     c = ENG.closest_career(career); d, g, s, r, geo, conf = ENG.market_seed[c]
@@ -52,6 +105,19 @@ def market_for(career, loc):
         age = (today - dt.date.fromisoformat(blk["as_of"])).days
         srcs.append({"source": blk["source_name"], "type": kind, "as_of": blk["as_of"], "note": sg["note"], "url": blk.get("source_url"),
                      "freshness": "Fresh" if age <= 30 else "Aging" if age <= 120 else "Stale", "age_days": age})
+    live = adzuna_jobs(c, loc)
+    if live is not None:
+        live_demand = min(100, 100 * math.log1p(live["count"]) / math.log1p(10000))
+        sig["demand"] = .55 * sig["demand"] + .45 * live_demand
+        if live["mean_salary"]:
+            live_salary_index = min(100, 100 * math.log1p(live["mean_salary"]) / math.log1p(10_000_000))
+            sig["salary_index"] = .65 * sig["salary_index"] + .35 * live_salary_index
+        sig["confidence"] = min(.98, max(sig["confidence"], .94))
+        salary_note = f" Average advertised salary: INR {live['mean_salary']:,.0f} per year." if live["mean_salary"] else " Salary estimates were not available."
+        srcs.append({"source": "Adzuna", "type": "Live job search", "as_of": live["retrieved_at"][:10],
+                     "retrieved_at": live["retrieved_at"], "freshness": "Live", "job_count": live["count"],
+                     "jobs": live["jobs"], "note": f"{live['count']:,} matching job listings for {c} near {loc}.{salary_note}",
+                     "url": "https://www.adzuna.in/jobs/search?" + urlencode({"q": c, "where": loc})})
     city = SNAP.get("naukri", {}).get("city_signals", {}).get(loc)
     if city: sig["geo_demand"] = max(0, min(100, sig["geo_demand"] + city["overall_growth_yoy"] * .5))
     sig["growth_yoy"] = sum(v * w for v, w in zip(gv, cf)) / sum(cf); sig["confidence"] = min(.98, max(conf, sum(cf) / len(cf)))

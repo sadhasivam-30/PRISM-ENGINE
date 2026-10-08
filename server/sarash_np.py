@@ -68,7 +68,12 @@ class SarashEngine:
              "source_confidence": float(market["confidence"]), "cosine_feature": cos, "cost_budget_ratio": cost / budget}
         row = np.array([[f[c] for c in self.feature_cols]], float)
         x = (row - self.w["scaler_mean"]) / self.w["scaler_scale"]
-        m, c, mk, fin = [float(v.item()) for v in self._forward(x)]
+        m, _, mk, fin = [float(v.item()) for v in self._forward(x)]
+        cost_ratio = cost / budget
+        no_pressure_ratio, full_pressure_ratio, max_loan_relief = 0.5, 2.0, 0.25
+        cost_pressure = float(np.clip((cost_ratio - no_pressure_ratio) / (full_pressure_ratio - no_pressure_ratio), 0.0, 1.0))
+        loan_relief = max_loan_relief * float(np.clip(parent.get("loan_willingness", 50), 0, 100)) / 100
+        c = cost_pressure * (1 - loan_relief)
         return {"career": career, "rank": int(choice.get("rank", 1)),
                 "match_score": round(m * 100, 1), "conflict_index": round(c * 100, 1),
                 "parent_feasibility": round((1 - c) * 100, 1), "market_score": round(mk * 100, 1),
