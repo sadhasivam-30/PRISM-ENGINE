@@ -1,3 +1,5 @@
+import { mountPrism } from './gl.js';
+
 const $ = s => document.querySelector(s), RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const h = (t, p = {}, ...k) => { const e = document.createElement(t); for (const [a, v] of Object.entries(p)) { if (a.startsWith('on')) e.addEventListener(a.slice(2), v); else if (a === 'class') e.className = v; else if (v !== false && v != null) e.setAttribute(a, v === true ? '' : v); } k.flat().forEach(c => c != null && c !== false && e.append(c.nodeType ? c : String(c))); return e; };
 const sv = (t, a = {}, ...k) => { const e = document.createElementNS('http://www.w3.org/2000/svg', t); for (const [x, v] of Object.entries(a)) e.setAttribute(x, v); k.forEach(c => e.append(c)); return e; };
@@ -87,8 +89,9 @@ function loginPrism() {
 const loginPage = () => h('div', { class: 'login' }, loginPrism(), h('div', { class: 'card lcard' }, loginForm()));
 /* ---------- views ---------- */
 const sliderEl = (obj, key, label, hint, id) => { const o = h('output', { for: id }, obj[key]); const i = h('input', { type: 'range', id, min: 0, max: 100, value: obj[key], 'aria-label': label, oninput: () => { obj[key] = +i.value; o.textContent = i.value; S.dirty = true; } }); return h('div', { class: 'sl' }, h('label', { for: id }, label, h('span', { class: 'sm mut', style: 'display:block;font-weight:400' }, hint)), o, i); };
-let clockFrame = 0, clockCleanup = null;
+let clockFrame = 0, clockCleanup = null, prismCleanup = null;
 function stopClock() { if (clockCleanup) { clockCleanup(); clockCleanup = null; } }
+function stopPrism() { if (prismCleanup) { prismCleanup(); prismCleanup = null; } }
 function makeClock() {
   const svg = sv('svg', { class: 'clock-face', viewBox: '0 0 500 500', role: 'img', 'aria-label': 'Precision analog clock showing local device time' });
   const defs = sv('defs');
@@ -205,7 +208,20 @@ function startClock(svg) {
 function splash() {
   const copy = h('div', { class: 'hero-copy' }, h('span', { class: 'hero-kicker' }, 'PRISM ENGINE  /  CAREER INTELLIGENCE'), h('h1', {}, 'Find the path that ', h('em', {}, 'fits you'), ', your family and the market.'), h('p', { class: 'mut hero-description' }, 'PRISM combines your strengths, your family’s budget and live-style labour-market signals into explainable career guidance, calculated by SARASH.'),
     h('div', { class: 'row hero-actions' }, h('a', { class: 'btn pri lg', href: '#/assess', style: 'display:inline-grid;place-content:center;text-decoration:none' }, S.me ? 'Open My Dashboard' : 'Start My PRISM Assessment'), !S.me && h('button', { class: 'btn ghost', onclick: loginDlg }, 'Already have a PRISM ID? Log in')));
-  const stage = h('div', { class: 'clock-stage' }, h('div', { class: 'clock-dust', 'aria-hidden': 'true' }), h('div', { class: 'clock-shell' }, h('div', { class: 'clock-spectrum', 'aria-hidden': 'true' }), makeClock(), h('div', { class: 'clock-glass', 'aria-hidden': 'true' })));
+  const prismFallback = sv('svg', { class: 'prism-fallback', viewBox: '0 0 320 320', 'aria-hidden': 'true' },
+    sv('defs', {}, sv('linearGradient', { id: 'hero-prism-fallback', x1: '0', y1: '0', x2: '1', y2: '1' },
+      sv('stop', { offset: '0%', 'stop-color': '#c7f8ff', 'stop-opacity': '.45' }),
+      sv('stop', { offset: '48%', 'stop-color': '#8f8cff', 'stop-opacity': '.18' }),
+      sv('stop', { offset: '100%', 'stop-color': '#63f1df', 'stop-opacity': '.35' }))),
+    sv('path', { d: 'M10 159H111', class: 'fallback-beam' }),
+    sv('path', { d: 'M111 160L160 76L209 160L160 244Z', fill: 'url(#hero-prism-fallback)', class: 'fallback-prism' }),
+    sv('path', { d: 'M111 160L160 76L209 160L160 244Z', class: 'fallback-prism-edge' }),
+    ...['#53eaff', '#628cff', '#916cff', '#df71ff'].map((color, i) => sv('path', {
+      d: `M208 160Q246 ${136 + i * 8} 310 ${103 + i * 34}`, stroke: color, class: 'fallback-ray'
+    })));
+  const prismCanvas = h('canvas', { class: 'prism-canvas', 'aria-hidden': 'true' });
+  const prismWindow = h('div', { class: 'prism-window prism-fallback-active', 'aria-hidden': 'true' }, prismFallback, prismCanvas);
+  const stage = h('div', { class: 'clock-stage' }, h('div', { class: 'clock-dust', 'aria-hidden': 'true' }), prismWindow, h('div', { class: 'clock-shell' }, h('div', { class: 'clock-spectrum', 'aria-hidden': 'true' }), makeClock(), h('div', { class: 'clock-glass', 'aria-hidden': 'true' })));
   const guidance = [
     ['FIT_01', 'Interests + strengths -> fitting careers'],
     ['PATH_02', 'Education + projects -> next steps'],
@@ -309,7 +325,7 @@ async function send(text) {
 /* ---------- router ---------- */
 const ORDER = ['/', '/login', '/assess', '/results', '/dash', '/help', '/privacy']; let cur = null, tm;
 function route() {
-  stopClock();
+  stopClock(); stopPrism();
   const p = location.hash.slice(1) || '/'; document.body.classList.toggle('metal', p === '/login');
   document.querySelectorAll('.dnav a,.bnav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + p));
   const f = { '/': splash, '/login': loginPage, '/assess': assess, '/results': results, '/dash': results, '/help': help, '/privacy': privacy }[p] || splash;
@@ -331,6 +347,8 @@ function route() {
     view.replaceChildren(n);
     const clock = n.querySelector('.clock-face');
     if (clock) startClock(clock);
+    const prism = n.querySelector('.prism-canvas');
+    if (prism) prismCleanup = mountPrism(prism);
     scrollTo(0, 0);
   };
   if (old && cur !== p && !RM) { old.classList.add('leave'); tm = setTimeout(swap, 210); } else swap();
