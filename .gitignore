@@ -1,11 +1,11 @@
+**/.env
 .env
+.env.*
+!.env.example
 *.key
 *.pem
 data/prism.db
 __pycache__/
-
-.env.*
-!.env.example
 *.sqlite
 *.sqlite3
 *.db

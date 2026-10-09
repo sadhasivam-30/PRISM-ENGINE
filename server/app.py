@@ -55,17 +55,35 @@ def adzuna_jobs(career, loc):
         cached = ADZUNA_CACHE.get(cache_key)
         if cached and now - cached[0] < ADZUNA_CACHE_TTL: return cached[1]
     queries = {"AI/ML Engineer": "machine learning engineer", "Cybersecurity Analyst": "cyber security analyst",
-               "Cloud/DevOps Engineer": "cloud devops engineer", "Defense Entry": "defence officer",
-               "UX/Product Designer": "UX designer"}
-    params = urlencode({"app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY, "results_per_page": 10,
-                        "what": queries.get(career, career), "where": loc, "content-type": "application/json"})
+               "Cloud/DevOps Engineer": "cloud devops engineer", "Commercial Pilot": "pilot",
+               "Defense Entry": "defence jobs", "UX/Product Designer": "UX designer"}
+    fallbacks = {"AI/ML Engineer": "AI engineer", "Cybersecurity Analyst": "security analyst",
+                 "Cloud/DevOps Engineer": "DevOps engineer", "Commercial Pilot": "commercial pilot",
+                 "Defense Entry": "defence officer", "Aeronautical Engineer": "aerospace engineer",
+                 "UX/Product Designer": "product designer"}
     result = None
     try:
-        req = ur.Request(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
-                         headers={"Accept": "application/json", "User-Agent": "PRISM-Engine/1.0"})
-        with ur.urlopen(req, timeout=5) as response: payload = json.load(response)
+        def search(term, where):
+            params = urlencode({"app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY, "results_per_page": 10,
+                                "what": term, "where": where, "content-type": "application/json"})
+            req = ur.Request(f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
+                             headers={"Accept": "application/json", "User-Agent": "PRISM-Engine/1.0"})
+            with ur.urlopen(req, timeout=5) as response: return json.load(response)
+        query = queries.get(career, career)
+        searched_location = loc
+        payload = search(query, loc)
         listings = payload.get("results", []) if isinstance(payload.get("results", []), list) else []
         count = max(0, int(payload.get("count", len(listings)) or 0))
+        if count == 0 and fallbacks.get(career):
+            query = fallbacks[career]
+            payload = search(query, loc)
+            listings = payload.get("results", []) if isinstance(payload.get("results", []), list) else []
+            count = max(0, int(payload.get("count", len(listings)) or 0))
+        if count == 0 and loc:
+            searched_location = country.upper() + " (country-wide)"
+            payload = search(query, "")
+            listings = payload.get("results", []) if isinstance(payload.get("results", []), list) else []
+            count = max(0, int(payload.get("count", len(listings)) or 0))
         salaries = []; jobs = []
         for item in listings[:10]:
             low, high = item.get("salary_min"), item.get("salary_max")
@@ -86,7 +104,8 @@ def adzuna_jobs(career, loc):
             mean_salary = sum(salaries) / len(salaries) if salaries else None
         if mean_salary is not None and not math.isfinite(mean_salary): mean_salary = None
         result = {"count": max(count, len(listings)), "mean_salary": float(mean_salary) if mean_salary else None,
-                  "jobs": jobs, "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+              "jobs": jobs, "query": query, "searched_location": searched_location,
+              "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
     except Exception:
         result = None
     with ADZUNA_LOCK: ADZUNA_CACHE[cache_key] = (time.time(), result)
@@ -116,7 +135,7 @@ def market_for(career, loc):
         salary_note = f" Average advertised salary: INR {live['mean_salary']:,.0f} per year." if live["mean_salary"] else " Salary estimates were not available."
         srcs.append({"source": "Adzuna", "type": "Live job search", "as_of": live["retrieved_at"][:10],
                      "retrieved_at": live["retrieved_at"], "freshness": "Live", "job_count": live["count"],
-                     "jobs": live["jobs"], "note": f"{live['count']:,} matching job listings for {c} near {loc}.{salary_note}",
+                     "jobs": live["jobs"], "note": f"{live['count']:,} matching job listings for {c} in {live['searched_location']}.{salary_note}",
                      "url": "https://www.adzuna.in/jobs/search?" + urlencode({"q": c, "where": loc})})
     city = SNAP.get("naukri", {}).get("city_signals", {}).get(loc)
     if city: sig["geo_demand"] = max(0, min(100, sig["geo_demand"] + city["overall_growth_yoy"] * .5))
