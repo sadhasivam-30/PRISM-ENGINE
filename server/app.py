@@ -160,6 +160,7 @@ def num(v, lo, hi, name):
     if not lo <= v <= hi: raise ValueError(name)
     return v
 def validate(b):
+    if b.get("consent") is not True: raise ValueError("consent")
     name = str(b.get("name", "")).strip()
     if not 1 <= len(name) <= 60 or not re.fullmatch(r"[\w .'-]+", name): raise ValueError("name")
     dob = str(b.get("dob", ""))
@@ -177,7 +178,8 @@ def validate(b):
     if len({c["career"] for c in ch}) != 3: raise ValueError("choices")
     loc = str(b.get("location", "Chennai"))[:40]
     if not re.fullmatch(r"[A-Za-z .]+", loc): raise ValueError("location")
-    return name, dob, pin, {"student": st, "parent": par, "choices": ch, "location": loc}
+    return name, dob, pin, {"student": st, "parent": par, "choices": ch, "location": loc,
+                            "consent": {"accepted": True, "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "notice_version": "1"}}
 
 SYSTEM = ("You are PRISM AI Guide. Explain only the verified SARASH numbers supplied; never invent or change a score. Use simple language, "
           "distinguish student fit, family feasibility and market data, never say a career is guaranteed or perfect, state data freshness. Direct answer first, then short bullets.")
@@ -251,7 +253,7 @@ class H(BaseHTTPRequestHandler):
         tok = secrets.token_urlsafe(32); SESS[hashlib.sha256(tok.encode()).hexdigest()] = {"id": aid, "exp": time.time() + 8 * 3600}
         return f"prism_sid={tok}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800" + ("; Secure" if HTTPS else "")
     def result(self, aid):
-        r = DB.execute("SELECT * FROM applicants WHERE id=?", (aid,)).fetchone()
+        with LOCK: r = DB.execute("SELECT * FROM applicants WHERE id=?", (aid,)).fetchone()
         if not r: return None
         d = json.loads(r["data"]); return {"id": r["id"], "name": r["name"], "created": r["created"], **d, "predictions": analyse(d), "config": CONFIG,
                                            "calculated_at": dt.datetime.now().isoformat(timespec="seconds")}
@@ -288,7 +290,7 @@ class H(BaseHTTPRequestHandler):
             if p == "/api/login":
                 aid = str(b.get("id", "")).strip().upper()
                 if limited(("l", ip, aid), 5, 600): return self.err(429, "RATE_LIMIT", "Too many attempts. Please wait a few minutes.")
-                r = DB.execute("SELECT * FROM applicants WHERE id=?", (aid,)).fetchone()
+                with LOCK: r = DB.execute("SELECT * FROM applicants WHERE id=?", (aid,)).fetchone()
                 ok = r and hmac.compare_digest(kdf(str(b.get("dob", "")), r["dob_salt"]), r["dob_hash"]) and hmac.compare_digest(kdf(str(b.get("pin", "")), r["pin_salt"]), r["pin_hash"])
                 audit("login_ok" if ok else "login_failed", aid if ok else "")
                 if not ok: return self.err(401, "BAD_LOGIN", "Applicant ID, date of birth or PIN is incorrect.")

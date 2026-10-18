@@ -21,7 +21,7 @@ vec3 scene(vec2 p){
   float d2=seg(p,E,X); float inner=exp(-d2*d2/.00005)*1.1+exp(-d2*d2/.002)*.18;
   col+=vec3(.55,.91,1.)*(beam+inner)+vec3(.3,.72,1.)*exp(-length(p-E)*7.)*.55;
   vec2 v=p-X; float r=length(v); float ang=atan(v.y,v.x); float t=(base+.18-ang)/.36;
-  float m=smoothstep(-.04,.06,t)*smoothstep(1.04,.94,t); float mw=smoothstep(-.5,.1,t)*smoothstep(1.5,.9,t);
+  float m=smoothstep(-.04,.06,t)*(1.-smoothstep(.94,1.04,t)); float mw=smoothstep(-.5,.1,t)*(1.-smoothstep(.9,1.5,t));
   vec3 sc=spec(clamp(t,0.,1.));
   float sh=.85+.15*sin(ang*140.+uTime*.4)*sin(ang*53.);
   col+=sc*m*(1.15/(1.+r*1.1))*smoothstep(0.,.12,r)*sh + sc*mw*.12/(1.+r*1.5);
