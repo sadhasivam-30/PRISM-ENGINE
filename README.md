@@ -1,5 +1,6 @@
 # PRISM Engine (local build)
 **Live Demo:** [Open PRISM-ENGINE](https://prism-engine-isxb.onrender.com)
+WARNING Demo only: Use fictional information. Do not enter real personal details. Saved demo data may be deleted.
 ```bash
 pip install -r requirements.txt
 python server/app.py
